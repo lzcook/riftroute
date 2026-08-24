@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"errors"
 	"net/netip"
 	"strings"
 	"testing"
@@ -283,8 +284,25 @@ func TestBuildDesiredIncludeNeedsPolicyRouting(t *testing.T) {
 func TestBuildDesiredAutoGatewayMissing(t *testing.T) {
 	in := testInput(excludeProfile())
 	in.GatewayV4 = netip.Addr{} // no physical gateway resolvable
+	in.GatewayV4Err = errors.New("provider gateway lookup failed")
 	if _, _, err := BuildDesired(in); err == nil {
 		t.Fatal("expected error when gateway: auto cannot resolve")
+	} else if !strings.Contains(err.Error(), "provider gateway lookup failed") {
+		t.Fatalf("provider error was lost: %v", err)
+	}
+}
+
+func TestBuildDesiredAutoGatewayMissingIPv6PreservesProviderError(t *testing.T) {
+	in := testInput(domain.Profile{
+		ID: "p6", Name: "v6-direct", Enabled: true, Mode: domain.ModeExclude,
+		Gateway: "auto",
+		Rules:   []domain.Rule{{Type: domain.RuleCIDR, Value: "2001:db8::/32"}},
+	})
+	in.GatewayV6Err = errors.New("IPv6 gateway lookup failed")
+	if _, _, err := BuildDesired(in); err == nil {
+		t.Fatal("expected error when IPv6 gateway: auto cannot resolve")
+	} else if !strings.Contains(err.Error(), "IPv6 gateway lookup failed") {
+		t.Fatalf("provider error was lost: %v", err)
 	}
 }
 

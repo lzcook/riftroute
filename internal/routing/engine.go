@@ -27,11 +27,13 @@ const (
 
 // DesiredInput is everything the builder needs to derive desired managed state.
 type DesiredInput struct {
-	Profiles    []domain.Profile
-	GatewayV4   netip.Addr // resolved physical gateway (VPN-independent)
-	GatewayV6   netip.Addr
-	PhysIfaceV4 string
-	PhysIfaceV6 string
+	Profiles     []domain.Profile
+	GatewayV4    netip.Addr // resolved physical gateway (VPN-independent)
+	GatewayV6    netip.Addr
+	GatewayV4Err error
+	GatewayV6Err error
+	PhysIfaceV4  string
+	PhysIfaceV6  string
 	// VPN tunnel next-hop/iface, for include mode (Model B) destinations that go
 	// INTO the tunnel. Zero when no tunnel is active.
 	VPNGatewayV4 netip.Addr
@@ -520,6 +522,12 @@ func resolveGateway(profileGW string, fam domain.Family, in DesiredInput) (netip
 	}
 	if profileGW == "" || profileGW == "auto" {
 		if !auto.IsValid() {
+			if fam == domain.FamilyV4 && in.GatewayV4Err != nil {
+				return netip.Addr{}, "", fmt.Errorf("no physical gateway for %s: %w", fam, in.GatewayV4Err)
+			}
+			if fam == domain.FamilyV6 && in.GatewayV6Err != nil {
+				return netip.Addr{}, "", fmt.Errorf("no physical gateway for %s: %w", fam, in.GatewayV6Err)
+			}
 			return netip.Addr{}, "", fmt.Errorf("no physical gateway for %s (cannot resolve gateway: auto)", fam)
 		}
 		return auto, iface, nil
