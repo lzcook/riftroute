@@ -309,11 +309,47 @@ func Reconcile(desiredRoutes, actualRoutes []domain.ManagedRoute, desiredRules, 
 		}
 	}
 
-	// Order: add routes (incl. table defaults) → add rules → del rules → del
-	// routes. So a rule is never live without its table, and the table default
-	// outlives the rules during teardown.
-	ops := append(append(append(append([]domain.PlanOp{}, routeAdds...), ruleAdds...), ruleDels...), routeDels...)
+	var routePrefixOps []domain.PlanOp
+	if platform == "darwin" {
+		// route(8) cannot add a second route for the same destination. A physical
+		// gateway change must therefore delete the old route before adding the new
+		// one; add-first is treated as "File exists" and the following delete would
+		// leave no bypass route at all. Pair each delete with its replacement add
+		// so a multi-route gateway refresh does not remove every bypass at once.
+		addByDst := make(map[string]int, len(routeAdds))
+		for i, op := range routeAdds {
+			addByDst[routeDestinationKey(op.Route.Route)] = i
+		}
+		usedAdds := make(map[int]bool, len(routeAdds))
+		keptDels := routeDels[:0]
+		for _, op := range routeDels {
+			k := routeDestinationKey(op.Route.Route)
+			if addIdx, ok := addByDst[k]; ok && !usedAdds[addIdx] {
+				routePrefixOps = append(routePrefixOps, op, routeAdds[addIdx])
+				usedAdds[addIdx] = true
+				continue
+			}
+			keptDels = append(keptDels, op)
+		}
+		keptAdds := routeAdds[:0]
+		for i, op := range routeAdds {
+			if !usedAdds[i] {
+				keptAdds = append(keptAdds, op)
+			}
+		}
+		routeAdds = keptAdds
+		routeDels = keptDels
+	}
+
+	// Order: destination replacements → add routes (incl. table defaults) → add
+	// rules → del rules → del routes. So a rule is never live without its table,
+	// and the table default outlives the rules during teardown.
+	ops := append(append(append(append(append([]domain.PlanOp{}, routePrefixOps...), routeAdds...), ruleAdds...), ruleDels...), routeDels...)
 	return domain.Plan{Ops: ops, Inverse: invert(ops, platform)}
+}
+
+func routeDestinationKey(r domain.Route) string {
+	return string(r.Family) + "|" + r.Table + "|" + r.DstCIDR
 }
 
 func invert(ops []domain.PlanOp, platform string) []domain.PlanOp {

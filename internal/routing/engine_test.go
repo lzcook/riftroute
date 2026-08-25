@@ -362,6 +362,50 @@ func TestReconcileNoChange(t *testing.T) {
 	}
 }
 
+func TestReconcileDarwinGatewayChangeDeletesBeforeAdd(t *testing.T) {
+	oldRoute := domain.ManagedRoute{Route: domain.Route{
+		DstCIDR: "203.0.113.7/32", Gateway: "192.0.2.1", Iface: "en0", Family: domain.FamilyV4,
+	}, ProfileID: "manual-bypass"}
+	newRoute := oldRoute
+	newRoute.Gateway = "192.0.2.254"
+
+	plan := Reconcile([]domain.ManagedRoute{newRoute}, []domain.ManagedRoute{oldRoute}, nil, nil, "darwin")
+	if len(plan.Ops) != 2 {
+		t.Fatalf("gateway replacement should have two ops, got %+v", plan.Ops)
+	}
+	if plan.Ops[0].Kind != domain.OpDelRoute || plan.Ops[0].Route.Gateway != oldRoute.Gateway {
+		t.Fatalf("old route must be deleted first on darwin: %+v", plan.Ops)
+	}
+	if plan.Ops[1].Kind != domain.OpAddRoute || plan.Ops[1].Route.Gateway != newRoute.Gateway {
+		t.Fatalf("new route must be added after delete on darwin: %+v", plan.Ops)
+	}
+	if plan.Inverse[0].Kind != domain.OpDelRoute || plan.Inverse[1].Kind != domain.OpAddRoute {
+		t.Fatalf("inverse must remove new then restore old: %+v", plan.Inverse)
+	}
+}
+
+func TestReconcileDarwinGatewayChangesRemainPaired(t *testing.T) {
+	oldRoutes := []domain.ManagedRoute{
+		{Route: domain.Route{DstCIDR: "203.0.113.7/32", Gateway: "192.0.2.1", Iface: "en0", Family: domain.FamilyV4}},
+		{Route: domain.Route{DstCIDR: "198.51.100.8/32", Gateway: "192.0.2.1", Iface: "en0", Family: domain.FamilyV4}},
+	}
+	newRoutes := append([]domain.ManagedRoute(nil), oldRoutes...)
+	for i := range newRoutes {
+		newRoutes[i].Gateway = "192.0.2.254"
+	}
+
+	plan := Reconcile(newRoutes, oldRoutes, nil, nil, "darwin")
+	if len(plan.Ops) != 4 {
+		t.Fatalf("two gateway replacements should have four ops, got %+v", plan.Ops)
+	}
+	for i := 0; i < len(plan.Ops); i += 2 {
+		del, add := plan.Ops[i], plan.Ops[i+1]
+		if del.Kind != domain.OpDelRoute || add.Kind != domain.OpAddRoute || del.Route.DstCIDR != add.Route.DstCIDR {
+			t.Fatalf("replacement ops must remain paired by destination: %+v", plan.Ops)
+		}
+	}
+}
+
 func TestCommandPreviewPerOS(t *testing.T) {
 	d, _, _ := BuildDesired(testInput(excludeProfile()))
 	macPlan := Reconcile(d, nil, nil, nil, "darwin")
